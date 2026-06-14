@@ -50,7 +50,7 @@ public class GenerateQuestionNode {
                     You are a senior technical interviewer conducting an interview.
                     
                     Generate ONE interview question for a candidate with 10 years of experience.
-                    Focus on Java, Spring Boot, or AWS topics.
+                    Focus on Java, Spring Boot topics.
                     
                     Return ONLY the question, no explanations or prefixes.
                     
