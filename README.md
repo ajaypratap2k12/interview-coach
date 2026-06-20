@@ -1,13 +1,16 @@
 # Interview Coach
 
-AI-powered interview coaching application built with Spring Boot and LangGraph4j. Practice technical interviews with multi-turn conversations covering Java, Spring, and AWS topics.
+AI-powered interview coaching application built with Spring Boot and LangGraph4j. Uses a planning-based multi-agent architecture with domain experts, aggregation, and evaluation.
 
 ## Features
 
+- **Planning-based multi-agent workflow** — Planner → Supervisor → Experts → Aggregator → Evaluator
+- **Domain-specific experts** — Java, Spring, AWS, Microservices, Kafka (each answers only from its own domain)
+- **Shared expert response map** — all experts contribute to a single `expertResponses` map (Open/Closed Principle)
+- **Answer aggregation** — merges expert answers into one coherent interview-quality explanation
+- **Evaluation scoring** — technical accuracy + completeness (1-10)
+- **Execution tracing** — full trace of every graph invocation with per-node timing
 - **Multi-turn interview sessions** with follow-up questions
-- **Topic classification** - questions categorized as JAVA, SPRING, AWS, or UNKNOWN
-- **Domain-specific agents** - specialized knowledge for each technology area
-- **Answer evaluation** with detailed feedback and scoring
 - **Graph visualization** at `/graph/diagram`
 
 ## Tech Stack
@@ -40,26 +43,64 @@ AI-powered interview coaching application built with Spring Boot and LangGraph4j
 
 3. Run the application:
    ```bash
-   ./mvnw spring-boot:run
+   .\mvnw spring-boot:run
    ```
 
 ## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/interview/start` | Start a new interview session |
-| POST | `/interview/{sessionId}/answer` | Submit an answer |
-| GET | `/graph/diagram` | View graph structure |
+| `GET` | `/interview?question=...` | Process single question (returns answer) |
+| `GET` | `/interview/trace?question=...` | Process question with full execution trace (JSON) |
+| `GET` | `/interview/trace/text?question=...` | Process question with trace (readable text) |
+| `GET` | `/graph/diagram` | Mermaid diagram of graph structure |
+| `POST` | `/session/start` | Start new interview session |
+| `POST` | `/session/answer` | Submit answer, returns feedback + next question |
+
+## Graph Flow
+
+```
+START → planner → supervisor → [expert(s)] → aggregator → evaluator → END
+```
+
+1. **Planner** — LLM analyzes question, returns JSON array of agent IDs
+2. **Supervisor** — logs orchestration state, no LLM call
+3. **Experts** — each answers from its own domain only
+4. **Aggregator** — merges expert answers into one coherent answer
+5. **Evaluator** — scores the aggregated answer
 
 ## Project Structure
 
 ```
 src/main/java/com/interview/ai/coaching/
-├── config/           # Graph and AI configuration
-├── controller/       # REST endpoints
-├── graph/            # State definitions
-├── nodes/            # Graph node implementations
-└── service/          # Business logic
+├── config/
+│   ├── AIConfig.java                # ChatClient bean
+│   ├── InterviewGraphConfig.java    # Graph topology + routing
+│   └── InterviewSessionConfig.java  # Multi-turn session graphs
+├── controller/
+│   └── InterviewController.java     # REST endpoints
+├── graph/
+│   ├── InterviewState.java          # State schema (planner-based flow)
+│   ├── InterviewSessionState.java   # State for multi-turn session
+│   ├── ExecutionTrace.java          # Trace data + pretty print
+│   └── NodeTrace.java              # Per-node execution trace
+├── nodes/
+│   ├── PlannerAgentNode.java        # LLM planner — returns JSON array
+│   ├── SupervisorAgentNode.java     # Orchestrator — no LLM, logs state
+│   ├── JavaExpertNode.java          # Java domain only
+│   ├── SpringExpertNode.java        # Spring domain only
+│   ├── AwsExpertNode.java           # AWS domain only
+│   ├── MicroserviceExpertNode.java  # Microservices domain only
+│   ├── KafkaExpertNode.java         # Kafka domain only
+│   ├── AggregatorAgentNode.java     # Merges expert answers
+│   ├── EvaluatorAgentNode.java      # Scores finalAnswer
+│   ├── GenerateQuestionNode.java    # Session question generation
+│   ├── GenerateFollowUpNode.java    # Session follow-up generation
+│   └── SessionEvaluateAnswerNode.java # Session answer evaluation
+└── service/
+    ├── InterviewGraphService.java   # Graph execution + trace capture
+    ├── InterviewSessionService.java # Multi-turn session orchestration
+    └── TraceCollector.java          # ThreadLocal trace collection
 ```
 
 ## License

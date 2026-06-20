@@ -11,6 +11,9 @@
 
 # Check graph diagram
 curl "http://localhost:8080/graph/diagram"
+
+# Check execution trace
+curl "http://localhost:8080/interview/trace?question=Explain+HashMap+internals"
 ```
 
 ## Tech Stack
@@ -24,77 +27,152 @@ curl "http://localhost:8080/graph/diagram"
 ```
 src/main/java/com/interview/ai/coaching/
 ├── config/
-│   ├── AIConfig.java              # ChatClient bean
-│   ├── InterviewGraphConfig.java  # Single-question graph
-│   └── InterviewSessionConfig.java # Multi-turn session graphs
+│   ├── AIConfig.java                # ChatClient bean
+│   ├── InterviewGraphConfig.java    # Graph topology + routing + tracing
+│   └── InterviewSessionConfig.java  # Multi-turn session graphs
 ├── controller/
-│   └── InterviewController.java   # GET /interview, GET /graph/diagram
+│   └── InterviewController.java     # REST endpoints (incl. /interview/trace)
 ├── graph/
-│   ├── Category.java              # Enum: JAVA, SPRING, AWS, UNKNOWN
-│   ├── InterviewState.java        # State for single-question flow
-│   └── InterviewSessionState.java # State for multi-turn session
+│   ├── InterviewState.java          # State schema (planner-based flow)
+│   ├── InterviewSessionState.java   # State for multi-turn session
+│   ├── ExecutionTrace.java          # Trace data + prettyPrint()
+│   └── NodeTrace.java              # Per-node execution trace record
 ├── nodes/
-│   ├── ClassifierAgentNode.java   # Classifies question → JAVA/SPRING/AWS
-│   ├── EvaluatorAgentNode.java    # Evaluates answer → feedback + score
-│   ├── GenerateFollowUpNode.java  # Generates follow-up question
-│   ├── GenerateQuestionNode.java  # Generates initial question
-│   ├── InterviewAgentNode.java    # General answer node (fallback)
-│   ├── JavaInterviewAgentNode.java # Java-specific: Collections, Streams, Concurrency, JVM
-│   ├── SessionEvaluateAnswerNode.java # Session evaluation with feedback
-│   ├── SpringInterviewAgentNode.java # Spring-specific: Boot, Security, JPA, Kafka, AI
-│   └── AwsInterviewAgentNode.java # AWS-specific: EC2, S3, IAM, VPC, ECS, EKS
+│   ├── PlannerAgentNode.java        # LLM planner — returns JSON array of agent IDs
+│   ├── SupervisorAgentNode.java     # Orchestrator — no LLM, logs state
+│   ├── JavaExpertNode.java          # Java domain only: Collections, Streams, Concurrency, JVM
+│   ├── SpringExpertNode.java        # Spring domain only: Boot, Security, JPA, AI
+│   ├── AwsExpertNode.java           # AWS domain only: EC2, S3, IAM, VPC, ECS, EKS
+│   ├── MicroserviceExpertNode.java  # Microservices domain only: Saga, CQRS, Event Sourcing
+│   ├── KafkaExpertNode.java         # Kafka domain only: Topics, Partitions, Consumer Groups
+│   ├── AggregatorAgentNode.java     # Merges expert answers into one coherent answer
+│   ├── EvaluatorAgentNode.java      # Scores finalAnswer → feedback + score
+│   ├── GenerateQuestionNode.java    # Generates interview question (session)
+│   ├── GenerateFollowUpNode.java    # Generates follow-up question (session)
+│   └── SessionEvaluateAnswerNode.java # Evaluates answer in session context
 └── service/
-    └── InterviewGraphService.java # Graph execution wrapper
+    ├── InterviewGraphService.java   # Graph execution + trace capture
+    ├── InterviewSessionService.java # Multi-turn session orchestration
+    └── TraceCollector.java          # ThreadLocal trace collection per request
 ```
 
-## Multi-Turn Session Flow
+## Graph Flow
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Interview Session                        │
-├─────────────────────────────────────────────────────────────┤
-│  1. questionGraph: START → generate_question → END         │
-│     → Returns currentQuestion                              │
-│                                                             │
-│  2. External: Candidate provides candidateAnswer           │
-│                                                             │
-│  3. evaluationGraph: START → evaluate_answer →             │
-│     generate_followup → END                                │
-│     → Returns feedback, score, nextQuestion                │
-│                                                             │
-│  4. Repeat from step 1 with nextQuestion                   │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                    Planning-Based Multi-Agent Flow                   │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  START → planner                                                     │
+│            │                                                         │
+│            ↓                                                         │
+│         supervisor  (logs orchestration state, no LLM)               │
+│            │                                                         │
+│            ↓  (conditional: executionPlan[0])                        │
+│            ├── JAVA          → java_agent                            │
+│            ├── SPRING        → spring_agent                          │
+│            ├── AWS           → aws_agent                             │
+│            ├── MICROSERVICES → microservice_agent                    │
+│            └── KAFKA         → kafka_agent                           │
+│                                  │                                   │
+│                                  ↓  (expertRouter: next or done)     │
+│                             aggregator  (merges all answers)         │
+│                                  │                                   │
+│                                  ↓                                   │
+│                             evaluator  (scores finalAnswer)          │
+│                                  │                                   │
+│                                  ↓                                   │
+│                                END                                   │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### Example Trace
+
+Question: "Transaction handling in Spring Boot microservices using Kafka"
+
+```
+Planner output: ["SPRING","MICROSERVICES","KAFKA"]
+Execution Plan: SPRING → MICROSERVICES → KAFKA
+
+Node Executions:
+  planner             1234ms
+  supervisor             2ms
+  spring_agent        4567ms
+  microservice_agent  3891ms
+  kafka_agent         3210ms
+  aggregator          5678ms
+  evaluator           2345ms
+
+Total: 20927ms (20.9s)
+Score: 8/10
 ```
 
 ## State Schema
 
 ```java
-public static final Map<String, Channel<?>> SCHEMA = Map.of(
-    "question", Channels.base(() -> ""),
-    "category", Channels.base(() -> Category.UNKNOWN),
-    "answer",   Channels.base(() -> ""),
-    "feedback", Channels.base(() -> ""),
-    "score",    Channels.base(() -> 0)
+public static final Map<String, Channel<?>> SCHEMA = Map.ofEntries(
+    // Input
+    Map.entry("question",        Channels.base(() -> "")),
+
+    // Planning (appender reducer — values accumulate, never overwrite)
+    Map.entry("executionPlan",   Channels.appender(() -> new ArrayList<>())),
+    Map.entry("completedAgents", Channels.appender(() -> new ArrayList<>())),
+
+    // Domain Expert Answers (merge reducer — entries accumulate per expert)
+    Map.entry("expertResponses", Channels.base(
+        (current, update) -> {
+            var merged = new java.util.HashMap<>(current);
+            merged.putAll(update);
+            return Map.copyOf(merged);
+        },
+        Map::of
+    )),
+
+    // Aggregated Output
+    Map.entry("finalAnswer",     Channels.base(() -> "")),
+    Map.entry("feedback",        Channels.base(() -> "")),
+    Map.entry("score",           Channels.base(() -> 0))
 );
 ```
 
-All fields use `Channels.base()` - new values overwrite old values completely.
+Key fields:
+- `executionPlan` — ordered list of agent IDs from the planner (appender reducer)
+- `completedAgents` — agents that have finished execution (appender reducer)
+- `expertResponses` — shared map of expert ID → answer (merge reducer: each expert writes its own key without overwriting others)
+- `finalAnswer` — assembled by the aggregator from all expert responses
+- `feedback` / `score` — produced by the evaluator
 
-**Merging behavior**: When multiple nodes return different keys, LangGraph4j merges by union. If two nodes return the same key, the later node's value wins.
+### Extensibility
+
+Adding a new expert (e.g. DATABASE, SECURITY) requires only:
+1. Create a new expert node class
+2. Register the bean and node in `InterviewGraphConfig`
+
+No changes needed in `InterviewState` or `AggregatorAgentNode` — both operate generically on the `expertResponses` map.
+
+## REST API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/interview?question=...` | Process single question through graph |
+| `GET` | `/interview/trace?question=...` | Process question with full execution trace (JSON) |
+| `GET` | `/interview/trace/text?question=...` | Process question with trace (readable text) |
+| `GET` | `/graph/diagram` | Get Mermaid diagram of graph structure |
+| `POST` | `/session/start` | Start new interview session, returns first question |
+| `POST` | `/session/answer` | Submit answer, returns feedback + next question |
 
 ## Critical LangGraph4j 1.8.17 API Notes
 
 ### State Construction
 
 ```java
-// Must pass SCHEMA + state factory
 new StateGraph<>(InterviewState.SCHEMA, InterviewState::new)
 ```
 
 ### Adding Nodes
 
 ```java
-// NodeAction is NOT directly accepted by addNode - must wrap in AsyncNodeAction
 AsyncNodeAction<InterviewState> agentAction = state -> {
     var result = node.execute(state);
     return CompletableFuture.completedFuture(result);
@@ -106,33 +184,33 @@ graph.addNode("node_id", agentAction);
 
 ```java
 // Channels.base(() -> "") = overwrite (no reducer)
+// Channels.appender(() -> new ArrayList<>()) = append to list (reducer)
+// Channels.base(mergeReducer, Map::of) = merge map entries (custom reducer)
 // Access with type-safe: state.<String>value("key").orElse("")
 ```
 
-### Conditional Edges
+### Conditional Edges with Fan-Out
 
 ```java
-// Router returns Command with target node name
-AsyncCommandAction<InterviewState> router = (state, config) -> {
-    Category category = state.category();
-    String targetNode = category.name().toLowerCase() + "_agent";
-    return CompletableFuture.completedFuture(new Command(targetNode));
+// Expert router: finds next uncompleted agent or dispatches to aggregator
+AsyncCommandAction<InterviewState> expertRouter = (state, config) -> {
+    List<String> plan = state.executionPlan();
+    List<String> completed = state.completedAgents();
+    String nextAgent = plan.stream()
+            .filter(agent -> !completed.contains(agent))
+            .findFirst()
+            .orElse(null);
+    if (nextAgent == null) {
+        return CompletableFuture.completedFuture(new Command("aggregator"));
+    }
+    String nodeId = AGENT_NODE_MAP.getOrDefault(nextAgent, "aggregator");
+    return CompletableFuture.completedFuture(new Command(nodeId));
 };
-
-// Map category names to node IDs
-graph.addConditionalEdges("classifier", router,
-    Map.of(
-        "JAVA", "java_agent",
-        "SPRING", "spring_agent",
-        "AWS", "aws_agent",
-        "UNKNOWN", "general_agent"
-    ));
 ```
 
 ### Graph Execution
 
 ```java
-// invoke() returns Optional<InterviewState>, NOT InterviewState
 Optional<InterviewState> result = graph.invoke(initialState, RunnableConfig.builder().build());
 InterviewState finalState = result.orElseThrow();
 ```
@@ -148,7 +226,10 @@ spring.ai.openai.base-url=https://openrouter.ai/api/v1
 
 ## Common Mistakes
 
-1. Using `StateGraph.compile()` bean instead of `CompiledGraph` - Spring injection requires `CompiledGraph<InterviewState>`
-2. Passing `NodeAction` directly to `addNode()` - must wrap in `AsyncNodeAction` with `CompletableFuture`
-3. Using `Channels.lastValue()` (doesn't exist) - use `Channels.base(() -> "")` for overwrite behavior
-4. Using `./mvnw` (Linux) - use `.\mvnw` on Windows
+1. Using `StateGraph.compile()` bean instead of `CompiledGraph` — Spring injection requires `CompiledGraph<InterviewState>`
+2. Passing `NodeAction` directly to `addNode()` — must wrap in `AsyncNodeAction` with `CompletableFuture`
+3. Using `Channels.lastValue()` (doesn't exist) — use `Channels.base(() -> "")` for overwrite behavior
+4. Using `./mvnw` (Linux) — use `.\mvnw` on Windows
+5. Using `Map.of()` with more than 10 entries — use `Map.ofEntries()` with `Map.entry()` for 11+ schema fields
+6. Forgetting to update `expertRoutingMap` when adding new expert nodes — all expert node IDs must be in the map
+7. Using `Channels.appender()` for maps — it only works for `List<T>`. Use `Channels.base(reducer, supplier)` with a merge reducer for `Map` fields

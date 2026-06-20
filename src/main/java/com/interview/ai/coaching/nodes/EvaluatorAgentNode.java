@@ -10,27 +10,20 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Node implementation for evaluating interview answers.
- * 
- * This class represents an evaluation node in the interview coaching graph
- * that reviews generated answers and provides feedback with scores.
- * It uses Spring AI's {@link ChatClient} to interact with an LLM configured
- * as an interview answer evaluator.
- * 
- * <p>The node evaluates:</p>
+ * Evaluator agent node that scores the aggregated answer.
+ *
+ * <p>Reads {@code finalAnswer} (produced by AggregatorAgentNode) and evaluates
+ * it for technical accuracy and completeness. Produces {@code feedback} and
+ * {@code score}.</p>
+ *
+ * <h3>Contract</h3>
  * <ul>
- *   <li>Technical accuracy (1-10)</li>
- *   <li>Completeness (1-10)</li>
- *   <li>Provides suggestions for improvement</li>
+ *   <li>Reads {@code finalAnswer} — does NOT assemble or modify it</li>
+ *   <li>Produces {@code feedback} and {@code score}</li>
  * </ul>
- * 
- * <p>The combined score is calculated as: (technical_accuracy + completeness) / 2</p>
- * 
+ *
  * @author Interview AI Coaching Team
- * @version 1.0
- * @see ChatClient
- * @see InterviewState
- * @see org.bsc.langgraph4j.action.NodeAction
+ * @version 2.0
  */
 @Slf4j
 @RequiredArgsConstructor
@@ -44,42 +37,38 @@ public class EvaluatorAgentNode {
 
     /**
      * Executes the evaluator node.
-     * 
-     * This method processes the current state, evaluates the answer
-     * against the question, and returns feedback with scores.
-     * 
-     * @param state the current interview state containing question and answer
-     * @return a map containing the state updates with feedback and score
+     *
+     * @param state the current interview state with finalAnswer
+     * @return state updates with {@code feedback} and {@code score}
      */
     public Map<String, Object> execute(InterviewState state) {
         log.info("[{}] Executing node", NODE_NAME);
-        log.info("[{}] Input state: question='{}', category={}, answer='{}...'",
-                NODE_NAME, state.question(), state.category(),
-                state.answer().substring(0, Math.min(state.answer().length(), 50)));
+        log.info("[{}] Input: question='{}', finalAnswer={} chars",
+                NODE_NAME, state.question(), state.finalAnswer().length());
 
         String question = state.question();
-        String answer = state.answer();
+        String finalAnswer = state.finalAnswer();
 
         String evaluation = chatClient.prompt()
                 .user("""
                     You are a technical interview evaluator.
-                    
+
                     Review the following interview answer and provide:
                     1. Technical Accuracy (1-10): How technically correct is the answer?
                     2. Completeness (1-10): How complete and thorough is the answer?
                     3. Suggestions: Specific improvements for the answer.
-                    
+
                     Format your response EXACTLY as:
                     Technical Accuracy: X
                     Completeness: Y
                     Suggestions: [your suggestions here]
-                    
+
                     Question:
                     %s
-                    
+
                     Answer:
                     %s
-                    """.formatted(question, answer))
+                    """.formatted(question, finalAnswer))
                 .call()
                 .content();
 
@@ -90,24 +79,13 @@ public class EvaluatorAgentNode {
         String feedback = String.format("Technical Accuracy: %d/10, Completeness: %d/10\n%s",
                 technicalScore, completenessScore, extractSuggestions(evaluation));
 
-        Map<String, Object> outputUpdates = Map.of(
-                "feedback", feedback,
-                "score", combinedScore
-        );
-        log.info("[{}] Output updates: score={}, feedback='{}...'",
+        log.info("[{}] Output: score={}, feedback='{}...'",
                 NODE_NAME, combinedScore, feedback.substring(0, Math.min(feedback.length(), 100)));
         log.info("[{}] Node execution complete", NODE_NAME);
 
-        return outputUpdates;
+        return Map.of("feedback", feedback, "score", combinedScore);
     }
 
-    /**
-     * Parses a score from the evaluation text using the given pattern.
-     * 
-     * @param text the evaluation text
-     * @param pattern the pattern to match
-     * @return the parsed score, or 5 (default) if not found
-     */
     private int parseScore(String text, Pattern pattern) {
         if (text == null) {
             return 5;
@@ -124,12 +102,6 @@ public class EvaluatorAgentNode {
         return 5;
     }
 
-    /**
-     * Extracts suggestions from the evaluation text.
-     * 
-     * @param text the evaluation text
-     * @return the suggestions string
-     */
     private String extractSuggestions(String text) {
         if (text == null) {
             return "No suggestions available.";
