@@ -5,8 +5,11 @@ import org.bsc.langgraph4j.state.Channel;
 import org.bsc.langgraph4j.state.Channels;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.bsc.langgraph4j.state.Reducer;
 
 /**
  * Represents the state of an interview coaching session using a planning-based
@@ -16,29 +19,34 @@ import java.util.Map;
  * <ol>
  *   <li><b>Planner</b> analyzes the question and produces an {@code executionPlan}
  *       listing which expert agents should be consulted.</li>
- *   <li><b>Experts</b> each write their domain-specific answer to their dedicated
- *       field (e.g. {@code javaAnswer}, {@code springAnswer}).</li>
- *   <li><b>Aggregator</b> combines all expert answers into {@code finalAnswer} and
- *       produces feedback/score.</li>
+ *   <li><b>Experts</b> each contribute their domain-specific answer to the shared
+ *       {@code expertResponses} map under their own key.</li>
+ *   <li><b>Aggregator</b> iterates over all entries in {@code expertResponses} and
+ *       combines them into {@code finalAnswer}.</li>
  * </ol>
  *
- * <h3>Field Categories</h3>
+ * <h3>Extensibility (Open/Closed Principle)</h3>
+ * <p>Adding a new expert (e.g. DATABASE, SECURITY, SYSTEM_DESIGN) requires only:</p>
  * <ul>
- *   <li><b>Input:</b> {@code question} — the interview question being processed</li>
- *   <li><b>Plan:</b> {@code executionPlan}, {@code completedAgents} — planning and tracking</li>
- *   <li><b>Expert outputs:</b> dedicated answer fields per domain expert</li>
- *   <li><b>Aggregated output:</b> {@code finalAnswer}, {@code feedback}, {@code score}</li>
+ *   <li>Creating a new expert node class</li>
+ *   <li>Registering it in the graph configuration</li>
  * </ul>
+ * <p>No changes are required in this state class or in the AggregatorAgentNode,
+ * because both operate on the generic {@code expertResponses} map rather than
+ * hardcoded per-expert fields.</p>
  *
  * <h3>Channel Types</h3>
  * <ul>
+ *   <li>{@code expertResponses} uses {@link Channels#base(org.bsc.langgraph4j.state.Reducer, java.util.function.Supplier)}
+ *       with a merge reducer — multiple expert nodes can each write their own entry
+ *       without overwriting entries from other experts.</li>
  *   <li>List fields ({@code executionPlan}, {@code completedAgents}) use
- *       {@link Channels#appender} — values are appended, not overwritten.</li>
- *   <li>All other fields use {@link Channels#base} — new values overwrite old values.</li>
+ *       {@link Channels#appender(java.util.function.Supplier)} — values are appended.</li>
+ *   <li>All other fields use {@link Channels#base(java.util.function.Supplier)} — overwrite.</li>
  * </ul>
  *
  * @author Interview AI Coaching Team
- * @version 2.0
+ * @version 3.0
  * @see AgentState
  * @see Channel
  * @see Channels
@@ -46,12 +54,26 @@ import java.util.Map;
 public class InterviewState extends AgentState {
 
     /**
-     * Schema definition for the interview state.
+     * Reducer that merges two maps by copying the current map and adding/overwriting
+     * entries from the update map. Each expert node contributes a single-entry map
+     * {@code {AGENT_ID: answer}}, and this reducer accumulates them into the shared
+     * {@code expertResponses} map without losing entries from other experts.
      *
-     * <p>List fields use {@link Channels#appender(java.util.function.Supplier)} which
-     * creates a channel that appends new values to the existing list rather than
-     * replacing it. All other fields use {@link Channels#base(java.util.function.Supplier)}
-     * which overwrites the previous value.</p>
+     * <p>A Map-based shared state is preferable to individual per-expert fields because:</p>
+     * <ul>
+     *   <li>New experts can be added without modifying the state schema (Open/Closed Principle)</li>
+     *   <li>The aggregator can iterate generically over all responses without hardcoded field references</li>
+     *   <li>The reducer logic is centralized and consistent — every expert follows the same contract</li>
+     * </ul>
+     */
+    private static final Reducer<Map<String, String>> MERGE_REDUCER = (current, update) -> {
+        var merged = new HashMap<>(current);
+        merged.putAll(update);
+        return Map.copyOf(merged);
+    };
+
+    /**
+     * Schema definition for the interview state.
      */
     public static final Map<String, Channel<?>> SCHEMA =
             Map.ofEntries(
@@ -59,39 +81,20 @@ public class InterviewState extends AgentState {
                     Map.entry("question", Channels.base(() -> "")),
 
                     // ── Planning ───────────────────────────────────────────
-                    // Ordered list of agent IDs the planner has scheduled (e.g. ["SPRING","KAFKA"]).
-                    // Appender reducer: each plan step is added, never overwritten.
                     Map.entry("executionPlan", Channels.appender(() -> new ArrayList<>())),
-
-                    // Agent IDs that have already completed their work.
-                    // Appender reducer: agents are added as they finish.
                     Map.entry("completedAgents", Channels.appender(() -> new ArrayList<>())),
 
                     // ── Domain Expert Answers ──────────────────────────────
-                    // Each expert writes to its own dedicated field.
-                    // Base (overwrite) reducer: each expert sets its answer exactly once.
-                    Map.entry("javaAnswer", Channels.base(() -> "")),
-                    Map.entry("springAnswer", Channels.base(() -> "")),
-                    Map.entry("microserviceAnswer", Channels.base(() -> "")),
-                    Map.entry("kafkaAnswer", Channels.base(() -> "")),
-                    Map.entry("awsAnswer", Channels.base(() -> "")),
+                    // Shared map: each expert writes {AGENT_ID: answer} under its own key.
+                    // Merge reducer accumulates entries from all experts without overwriting.
+                    Map.entry("expertResponses", Channels.base(MERGE_REDUCER, Map::of)),
 
                     // ── Aggregated Output ──────────────────────────────────
-                    // Combined answer from all experts, produced by the aggregator.
                     Map.entry("finalAnswer", Channels.base(() -> "")),
-
-                    // Evaluation feedback produced by the evaluator/aggregator.
                     Map.entry("feedback", Channels.base(() -> "")),
-
-                    // Numeric score (1-10) produced by the evaluator/aggregator.
                     Map.entry("score", Channels.base(() -> 0))
             );
 
-    /**
-     * Constructs a new InterviewState with the given initial data.
-     *
-     * @param initData the initial state data as a map of key-value pairs
-     */
     public InterviewState(Map<String, Object> initData) {
         super(initData);
     }
@@ -100,11 +103,6 @@ public class InterviewState extends AgentState {
     //  Input
     // ════════════════════════════════════════════════════════════════════════
 
-    /**
-     * The interview question being processed.
-     *
-     * @return the question string, or empty string if not set
-     */
     public String question() {
         return this.<String>value("question").orElse("");
     }
@@ -113,32 +111,10 @@ public class InterviewState extends AgentState {
     //  Planning
     // ════════════════════════════════════════════════════════════════════════
 
-    /**
-     * The execution plan produced by the planner agent.
-     *
-     * <p>Contains an ordered list of agent IDs (e.g. {@code ["JAVA", "SPRING", "KAFKA"]})
-     * that should be consulted to answer the question. The planner writes this list
-     * once, and expert nodes consume it to determine which agents to invoke.</p>
-     *
-     * <p>Uses an appender reducer — plan steps are accumulated, not overwritten.</p>
-     *
-     * @return the list of planned agent IDs, or an empty list if not set
-     */
     public List<String> executionPlan() {
         return this.<List<String>>value("executionPlan").orElse(List.of());
     }
 
-    /**
-     * The list of agent IDs that have already completed their execution.
-     *
-     * <p>Used by the routing logic to determine which agent to invoke next
-     * from the execution plan. Each expert node appends its agent ID to this
-     * list after completing its work.</p>
-     *
-     * <p>Uses an appender reducer — completed agents are accumulated.</p>
-     *
-     * @return the list of completed agent IDs, or an empty list if not set
-     */
     public List<String> completedAgents() {
         return this.<List<String>>value("completedAgents").orElse(List.of());
     }
@@ -148,103 +124,34 @@ public class InterviewState extends AgentState {
     // ════════════════════════════════════════════════════════════════════════
 
     /**
-     * Answer produced by the Java expert agent.
+     * Shared map of expert responses keyed by expert ID (e.g. "JAVA", "SPRING").
      *
-     * <p>Covers: Collections, Streams, Concurrency, JVM, Memory Management,
-     * Design Patterns. Written once by the Java expert node.</p>
+     * <p>Each expert node writes a single-entry map {@code {AGENT_ID: answer}}.
+     * The merge reducer accumulates entries from all experts into this shared map.
+     * The aggregator iterates over all entries to produce {@code finalAnswer}.</p>
      *
-     * @return the Java-specific answer, or empty string if not yet produced
+     * <p>This design follows the Open/Closed Principle: adding a new expert requires
+     * no changes to this class or to the aggregator — the new expert's entry is
+     * automatically included.</p>
+     *
+     * @return unmodifiable map of expert ID to answer, empty if no experts have run yet
      */
-    public String javaAnswer() {
-        return this.<String>value("javaAnswer").orElse("");
-    }
-
-    /**
-     * Answer produced by the Spring expert agent.
-     *
-     * <p>Covers: Spring Boot, Spring Security, Spring Data JPA, Transactions,
-     * Microservices, Kafka, Spring AI. Written once by the Spring expert node.</p>
-     *
-     * @return the Spring-specific answer, or empty string if not yet produced
-     */
-    public String springAnswer() {
-        return this.<String>value("springAnswer").orElse("");
-    }
-
-    /**
-     * Answer produced by the Microservices expert agent.
-     *
-     * <p>Covers: Saga Pattern, CQRS, Event Sourcing, API Gateway,
-     * Service Discovery, Distributed Transactions. Written once by the
-     * microservices expert node.</p>
-     *
-     * @return the microservices-specific answer, or empty string if not yet produced
-     */
-    public String microserviceAnswer() {
-        return this.<String>value("microserviceAnswer").orElse("");
-    }
-
-    /**
-     * Answer produced by the Kafka expert agent.
-     *
-     * <p>Covers: Consumer Groups, Offsets, Partitions, Exactly-Once Semantics,
-     * Consumer Lag, Rebalancing. Written once by the Kafka expert node.</p>
-     *
-     * @return the Kafka-specific answer, or empty string if not yet produced
-     */
-    public String kafkaAnswer() {
-        return this.<String>value("kafkaAnswer").orElse("");
-    }
-
-    /**
-     * Answer produced by the AWS expert agent.
-     *
-     * <p>Covers: EC2, S3, IAM, VPC, ECS, EKS, Cloud Architecture.
-     * Written once by the AWS expert node.</p>
-     *
-     * @return the AWS-specific answer, or empty string if not yet produced
-     */
-    public String awsAnswer() {
-        return this.<String>value("awsAnswer").orElse("");
+    public Map<String, String> expertResponses() {
+        return this.<Map<String, String>>value("expertResponses").orElse(Map.of());
     }
 
     // ════════════════════════════════════════════════════════════════════════
     //  Aggregated Output
     // ════════════════════════════════════════════════════════════════════════
 
-    /**
-     * The combined final answer produced by the aggregator agent.
-     *
-     * <p>Assembled from all relevant expert answers (e.g. {@code javaAnswer},
-     * {@code springAnswer}, etc.) into a single coherent response. This is the
-     * primary output of the workflow.</p>
-     *
-     * @return the combined answer, or empty string if not yet produced
-     */
     public String finalAnswer() {
         return this.<String>value("finalAnswer").orElse("");
     }
 
-    /**
-     * Evaluation feedback produced by the evaluator/aggregator.
-     *
-     * <p>Contains structured feedback including technical accuracy score,
-     * completeness score, and improvement suggestions.</p>
-     *
-     * @return the feedback string, or empty string if not set
-     */
     public String feedback() {
         return this.<String>value("feedback").orElse("");
     }
 
-    /**
-     * Numeric evaluation score (1-10) produced by the evaluator/aggregator.
-     *
-     * <p>Typically calculated as the average of technical accuracy and
-     * completeness scores.</p>
-     *
-     * @return the score, or 0 if not set
-     */
     public Integer score() {
         return this.<Integer>value("score").orElse(0);
     }

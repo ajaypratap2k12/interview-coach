@@ -66,6 +66,7 @@ public class SupervisorAgentNode {
         log.info("[{}] Current Agent    : {}", NODE_NAME, currentAgent == null ? "(none — all done)" : currentAgent);
         log.info("[{}] Remaining Agents : {}", NODE_NAME, remaining.isEmpty() ? "(none)" : remaining);
         log.info("[{}] Completed Agents : {}", NODE_NAME, completed.isEmpty() ? "(none)" : completed);
+        log.info("[{}] expertResponses  : {}", NODE_NAME, state.expertResponses());
         log.info("[{}] ─────────────────────────────────────────────", NODE_NAME);
 
         return Map.of();

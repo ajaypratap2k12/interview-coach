@@ -12,11 +12,14 @@ import java.util.Map;
  * Kafka expert agent node.
  *
  * <p>Answers ONLY from the Kafka domain. Must not mention other technologies.
- * Writes to {@code kafkaAnswer} and appends {@code "KAFKA"} to
- * {@code completedAgents}.</p>
+ * Writes {@code {"KAFKA": answer}} into the shared {@code expertResponses} map
+ * and appends {@code "KAFKA"} to {@code completedAgents}.</p>
+ *
+ * <p>This node is Open/Closed-compliant: adding new experts requires no changes
+ * to this class, {@code InterviewState}, or {@code AggregatorAgentNode}.</p>
  *
  * @author Interview AI Coaching Team
- * @version 2.0
+ * @version 3.0
  */
 @Slf4j
 @RequiredArgsConstructor
@@ -55,7 +58,7 @@ public class KafkaExpertNode {
                 .call()
                 .content();
 
-        log.info("[{}] Output: kafkaAnswer ({} chars)", NODE_NAME, answer.length());
-        return Map.of("kafkaAnswer", answer, "completedAgents", List.of(AGENT_ID));
+        log.info("[{}] Output: expertResponses[{}] ({} chars)", NODE_NAME, AGENT_ID, answer.length());
+        return Map.of("expertResponses", Map.of(AGENT_ID, answer), "completedAgents", List.of(AGENT_ID));
     }
 }
