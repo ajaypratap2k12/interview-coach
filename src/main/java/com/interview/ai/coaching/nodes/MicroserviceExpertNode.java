@@ -12,11 +12,14 @@ import java.util.Map;
  * Microservices expert agent node.
  *
  * <p>Answers ONLY from the microservices domain. Must not mention other technologies.
- * Writes to {@code microserviceAnswer} and appends {@code "MICROSERVICES"} to
- * {@code completedAgents}.</p>
+ * Writes {@code {"MICROSERVICES": answer}} into the shared {@code expertResponses} map
+ * and appends {@code "MICROSERVICES"} to {@code completedAgents}.</p>
+ *
+ * <p>This node is Open/Closed-compliant: adding new experts requires no changes
+ * to this class, {@code InterviewState}, or {@code AggregatorAgentNode}.</p>
  *
  * @author Interview AI Coaching Team
- * @version 2.0
+ * @version 3.0
  */
 @Slf4j
 @RequiredArgsConstructor
@@ -55,7 +58,7 @@ public class MicroserviceExpertNode {
                 .call()
                 .content();
 
-        log.info("[{}] Output: microserviceAnswer ({} chars)", NODE_NAME, answer.length());
-        return Map.of("microserviceAnswer", answer, "completedAgents", List.of(AGENT_ID));
+        log.info("[{}] Output: expertResponses[{}] ({} chars)", NODE_NAME, AGENT_ID, answer.length());
+        return Map.of("expertResponses", Map.of(AGENT_ID, answer), "completedAgents", List.of(AGENT_ID));
     }
 }

@@ -119,12 +119,15 @@ public static final Map<String, Channel<?>> SCHEMA = Map.ofEntries(
     Map.entry("executionPlan",   Channels.appender(() -> new ArrayList<>())),
     Map.entry("completedAgents", Channels.appender(() -> new ArrayList<>())),
 
-    // Domain Expert Answers (base reducer — each expert sets once)
-    Map.entry("javaAnswer",          Channels.base(() -> "")),
-    Map.entry("springAnswer",        Channels.base(() -> "")),
-    Map.entry("microserviceAnswer",  Channels.base(() -> "")),
-    Map.entry("kafkaAnswer",         Channels.base(() -> "")),
-    Map.entry("awsAnswer",           Channels.base(() -> "")),
+    // Domain Expert Answers (merge reducer — entries accumulate per expert)
+    Map.entry("expertResponses", Channels.base(
+        (current, update) -> {
+            var merged = new java.util.HashMap<>(current);
+            merged.putAll(update);
+            return Map.copyOf(merged);
+        },
+        Map::of
+    )),
 
     // Aggregated Output
     Map.entry("finalAnswer",     Channels.base(() -> "")),
@@ -136,9 +139,17 @@ public static final Map<String, Channel<?>> SCHEMA = Map.ofEntries(
 Key fields:
 - `executionPlan` — ordered list of agent IDs from the planner (appender reducer)
 - `completedAgents` — agents that have finished execution (appender reducer)
-- `*Answer` — each expert writes to its own dedicated field
-- `finalAnswer` — assembled by the aggregator from all expert answers
+- `expertResponses` — shared map of expert ID → answer (merge reducer: each expert writes its own key without overwriting others)
+- `finalAnswer` — assembled by the aggregator from all expert responses
 - `feedback` / `score` — produced by the evaluator
+
+### Extensibility
+
+Adding a new expert (e.g. DATABASE, SECURITY) requires only:
+1. Create a new expert node class
+2. Register the bean and node in `InterviewGraphConfig`
+
+No changes needed in `InterviewState` or `AggregatorAgentNode` — both operate generically on the `expertResponses` map.
 
 ## REST API Endpoints
 
@@ -174,6 +185,7 @@ graph.addNode("node_id", agentAction);
 ```java
 // Channels.base(() -> "") = overwrite (no reducer)
 // Channels.appender(() -> new ArrayList<>()) = append to list (reducer)
+// Channels.base(mergeReducer, Map::of) = merge map entries (custom reducer)
 // Access with type-safe: state.<String>value("key").orElse("")
 ```
 
@@ -220,3 +232,4 @@ spring.ai.openai.base-url=https://openrouter.ai/api/v1
 4. Using `./mvnw` (Linux) — use `.\mvnw` on Windows
 5. Using `Map.of()` with more than 10 entries — use `Map.ofEntries()` with `Map.entry()` for 11+ schema fields
 6. Forgetting to update `expertRoutingMap` when adding new expert nodes — all expert node IDs must be in the map
+7. Using `Channels.appender()` for maps — it only works for `List<T>`. Use `Channels.base(reducer, supplier)` with a merge reducer for `Map` fields

@@ -6,6 +6,7 @@ AI-powered interview coaching application built with Spring Boot and LangGraph4j
 
 - **Planning-based multi-agent workflow** — Planner → Supervisor → Experts → Aggregator → Evaluator
 - **Domain-specific experts** — Java, Spring, AWS, Microservices, Kafka (each answers only from its own domain)
+- **Shared expert response map** — all experts contribute to a single `expertResponses` map (Open/Closed Principle)
 - **Answer aggregation** — merges expert answers into one coherent interview-quality explanation
 - **Evaluation scoring** — technical accuracy + completeness (1-10)
 - **Execution tracing** — full trace of every graph invocation with per-node timing

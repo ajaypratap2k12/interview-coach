@@ -8,21 +8,19 @@ import org.springframework.ai.chat.client.ChatClient;
 import java.util.Map;
 
 /**
- * Aggregator agent node that merges all expert answers into a single
- * comprehensive interview-quality explanation.
+ * Aggregator agent node that merges all expert responses into a single answer.
  *
- * <p>Reads answers from all expert fields, removes duplicates, preserves
- * logical flow, and stores the result in {@code finalAnswer}.</p>
+ * <p>Iterates over the shared {@code expertResponses} map (keyed by expert ID)
+ * and builds a prompt that merges all domain-specific answers into one coherent,
+ * interview-quality explanation. Stores the result in {@code finalAnswer}.</p>
  *
- * <h3>Contract</h3>
- * <ul>
- *   <li>Must NEVER introduce new technical concepts absent from expert responses</li>
- *   <li>Must only synthesize and organize existing expert content</li>
- *   <li>Must produce one coherent, interview-quality explanation</li>
- * </ul>
+ * <h3>Open/Closed Principle</h3>
+ * <p>This node operates generically on {@code expertResponses} — it never references
+ * individual expert fields by name. Adding a new expert (e.g. DATABASE, SECURITY)
+ * requires no changes to this class.</p>
  *
  * @author Interview AI Coaching Team
- * @version 2.0
+ * @version 3.0
  */
 @Slf4j
 @RequiredArgsConstructor
@@ -32,15 +30,6 @@ public class AggregatorAgentNode {
 
     private final ChatClient chatClient;
 
-    /**
-     * Executes the aggregator node.
-     *
-     * <p>Collects non-empty expert answers, sends them to the LLM for merging,
-     * and returns the combined {@code finalAnswer}.</p>
-     *
-     * @param state the current interview state with expert answers
-     * @return state update with {@code finalAnswer}
-     */
     public Map<String, Object> execute(InterviewState state) {
         log.info("[{}] Executing node", NODE_NAME);
         log.info("[{}] Input: question='{}'", NODE_NAME, state.question());
@@ -87,29 +76,26 @@ public class AggregatorAgentNode {
     }
 
     /**
-     * Collects non-empty expert answers into a single labeled string.
+     * Collects all expert responses from the shared map into a formatted string.
      *
-     * @param state the current interview state
-     * @return formatted string of all expert answers
+     * <p>Iterates generically over {@code expertResponses} — no hardcoded expert
+     * references. New experts are automatically included.</p>
      */
     private String collectExpertAnswers(InterviewState state) {
         StringBuilder sb = new StringBuilder();
+        Map<String, String> responses = state.expertResponses();
 
-        appendIfPresent(sb, "Java", state.javaAnswer());
-        appendIfPresent(sb, "Spring", state.springAnswer());
-        appendIfPresent(sb, "AWS", state.awsAnswer());
-        appendIfPresent(sb, "Microservices", state.microserviceAnswer());
-        appendIfPresent(sb, "Kafka", state.kafkaAnswer());
+        for (Map.Entry<String, String> entry : responses.entrySet()) {
+            String expertId = entry.getKey();
+            String answer = entry.getValue();
+            if (answer != null && !answer.isBlank()) {
+                if (!sb.isEmpty()) {
+                    sb.append("\n\n");
+                }
+                sb.append("[").append(expertId).append("]\n").append(answer);
+            }
+        }
 
         return sb.toString();
-    }
-
-    private void appendIfPresent(StringBuilder sb, String label, String answer) {
-        if (answer != null && !answer.isBlank()) {
-            if (!sb.isEmpty()) {
-                sb.append("\n\n");
-            }
-            sb.append("[").append(label).append("]\n").append(answer);
-        }
     }
 }
