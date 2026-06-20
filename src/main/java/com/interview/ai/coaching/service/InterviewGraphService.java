@@ -1,5 +1,6 @@
 package com.interview.ai.coaching.service;
 
+import com.interview.ai.coaching.graph.ExecutionTrace;
 import com.interview.ai.coaching.graph.InterviewState;
 import lombok.extern.slf4j.Slf4j;
 import org.bsc.langgraph4j.CompiledGraph;
@@ -11,75 +12,79 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Service for executing the interview coaching graph.
- * 
- * This service provides a simple interface for processing interview
- * questions through the langgraph4j graph pipeline. It manages the
- * lifecycle of graph execution and provides logging for debugging.
- * 
- * <p>The service follows these steps for each request:</p>
- * <ol>
- *   <li>Creates an initial {@link InterviewState} with the question</li>
- *   <li>Executes the compiled graph with the initial state</li>
- *   <li>Extracts and returns the answer from the final state</li>
- * </ol>
- * 
+ * Service for executing the interview coaching graph with execution tracing.
+ *
  * @author Interview AI Coaching Team
- * @version 1.0
- * @see CompiledGraph
- * @see InterviewState
+ * @version 2.0
  */
 @Slf4j
 @Service
 public class InterviewGraphService {
 
     private final CompiledGraph<InterviewState> compiledGraph;
+    private final TraceCollector traceCollector;
 
-    /**
-     * Constructs the service with the compiled graph dependency.
-     * 
-     * @param compiledGraph the compiled interview coaching graph
-     */
-    public InterviewGraphService(CompiledGraph<InterviewState> compiledGraph) {
+    public InterviewGraphService(CompiledGraph<InterviewState> compiledGraph,
+                                 TraceCollector traceCollector) {
         this.compiledGraph = compiledGraph;
+        this.traceCollector = traceCollector;
     }
 
     /**
      * Processes an interview question through the graph pipeline.
-     * 
-     * <p>This method creates an initial state with the question,
-     * executes the graph, and returns the generated answer.</p>
-     * 
-     * @param question the interview question to process
-     * @return the generated answer from the graph
+     *
+     * @param question the interview question
+     * @return the generated answer
      */
     public String ask(String question) {
-        Map<String, Object> initialState = Map.of("question", question);
-        InterviewState inputState = new InterviewState(initialState);
+        return askWithTrace(question).answer();
+    }
 
-        log.info("Initial state: question='{}'", inputState.question());
+    /**
+     * Processes an interview question and returns both the answer and execution trace.
+     *
+     * @param question the interview question
+     * @return result containing the answer and execution trace
+     */
+    public AskResult askWithTrace(String question) {
+        log.info("Graph invocation started: question='{}'", question);
 
-        Optional<InterviewState> result = compiledGraph.invoke(
-                initialState,
-                RunnableConfig.builder().build()
-        );
+        // Start trace collection
+        traceCollector.startTrace(question);
 
-        InterviewState finalState = result.orElseThrow(
-                () -> new RuntimeException("Graph execution failed")
-        );
+        try {
+            Map<String, Object> initialState = Map.of("question", question);
 
-        log.info("Final state: answer='{}'", finalState.answer());
+            Optional<InterviewState> result = compiledGraph.invoke(
+                    initialState,
+                    RunnableConfig.builder().build()
+            );
 
-        return finalState.answer();
+            InterviewState finalState = result.orElseThrow(
+                    () -> new RuntimeException("Graph execution failed")
+            );
+
+            // Finalize trace with evaluator outputs
+            ExecutionTrace trace = traceCollector.finishTrace(
+                    finalState.finalAnswer(),
+                    finalState.score(),
+                    finalState.feedback()
+            );
+
+            log.info("Graph invocation completed: score={}, {} nodes traced",
+                    finalState.score(),
+                    trace != null ? trace.nodeTraces().size() : 0);
+
+            return new AskResult(finalState.finalAnswer(), trace);
+
+        } catch (Exception e) {
+            traceCollector.finishTrace("ERROR: " + e.getMessage(), 0, e.getMessage());
+            throw e;
+        }
     }
 
     /**
      * Generates a Mermaid diagram of the graph structure.
-     * 
-     * <p>This method uses LangGraph4j's built-in diagram generation
-     * to create a Mermaid flowchart representation of the graph.</p>
-     * 
-     * @return Mermaid diagram string
      */
     public String getMermaidDiagram() {
         GraphRepresentation representation = compiledGraph.getGraph(
@@ -88,4 +93,9 @@ public class InterviewGraphService {
         );
         return representation.content();
     }
+
+    /**
+     * Result of a graph invocation including the answer and trace.
+     */
+    public record AskResult(String answer, ExecutionTrace trace) {}
 }
